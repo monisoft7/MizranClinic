@@ -159,19 +159,15 @@ class DatabaseManager:
 
 
     def approve_vacation_by_head(self, vacation_id, approved, notes="", approved_by=None):
-        """موافقة أو رفض رئيس القسم على الإجازة"""
         with self.connection_lock:
             try:
-                # جلب بيانات الإجازة
                 self.cursor.execute("SELECT status FROM vacations WHERE id=?", (vacation_id,))
                 result = self.cursor.fetchone()
                 if not result:
                     raise Exception("طلب الإجازة غير موجود")
                 current_status = result[0]
-
                 if current_status != "بانتظار موافقة رئيس القسم":
                     raise Exception("لا يمكن اعتماد هذا الطلب إلا من قبل رئيس القسم في مرحلته الصحيحة")
-
                 if approved:
                     self.cursor.execute(
                         "UPDATE vacations SET status='بانتظار موافقة المدير', approved_by=? WHERE id=?",
@@ -187,6 +183,7 @@ class DatabaseManager:
             except Exception as e:
                 self.conn.rollback()
                 raise Exception(f"خطأ في موافقة رئيس القسم: {e}")
+
 
     def approve_vacation_by_manager(self, vacation_id, approved, notes="", approved_by=None):
         """موافقة أو رفض المدير على الإجازة"""

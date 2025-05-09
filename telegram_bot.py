@@ -1,3 +1,4 @@
+from approval_flow import ApprovalFlow
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
@@ -18,7 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Conversation states
 (
     PASSWORD, NATIONAL_ID, SERIAL_NUMBER, MAIN_MENU,
     VACATION_TYPE, VACATION_DEATH_TYPE, VACATION_DEATH_RELATION,
@@ -36,7 +36,6 @@ class EmployeeQueryBot:
 
     def setup_handlers(self):
         self.application = ApplicationBuilder().token(self.token).build()
-    
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start)],
             states={
@@ -221,6 +220,8 @@ class EmployeeQueryBot:
         )
         return VACATION_DATE
 
+
+
     async def show_work_days(self, update, context):
         emp_id = context.user_data.get('employee_id')
         if not emp_id:
@@ -251,89 +252,55 @@ class EmployeeQueryBot:
         else:
             await update.message.reply_text("لا توجد بيانات أيام عمل لهذا الموظف.")
 
-    async def handle_head_action(self, update, context):
-        telegram_id = str(update.effective_user.id)
-        action = update.message.text.strip()
-        vac_id = context.application.bot_data.get(f"head_pending_{telegram_id}")
 
-        if not vac_id:
-            await update.message.reply_text("لا يوجد طلب إجازة قيد التنفيذ.")
-            return
+    async def handle_head_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        telegram_id = update.effective_user.id
+        action = update.message.text
+        vacation_id = context.user_data.get("pending_vacation_id")
+        reason = context.user_data.get("rejection_reason", "")
 
-        self.db.execute_query(
-            "SELECT employee_id, type, duration, start_date, end_date, status FROM vacations WHERE id=?",
-            (vac_id,)
-        )
-        row = self.db.cursor.fetchone()
-        if not row:
-            await update.message.reply_text("تعذر تحديد الطلب.")
-            return
-        emp_id, vac_type, duration, start_date, end_date, current_status = row
-
-        self.db.execute_query(
-            "SELECT name, telegram_user_id, vacation_balance FROM employees WHERE id=?",
-            (emp_id,)
-        )
-        emp_row = self.db.cursor.fetchone()
-        emp_name = emp_row[0]
-        emp_telegram = emp_row[1]
-        emp_balance = emp_row[2]
+        if not vacation_id:
+            await update.message.reply_text("لا يوجد طلب قيد التنفيذ.")
+            return ConversationHandler.END
 
         if action == "موافق":
-            if current_status == "موافق":
-                await update.message.reply_text("تمت الموافقة على الطلب مسبقًا.")
-                return
-
-            # تحديث حالة الطلب فقط، لا يتم اعتماد نهائي هنا!
-            self.db.execute_query(
-                "UPDATE vacations SET status='بانتظار موافقة المدير' WHERE id=?",
-                (vac_id,),
-                commit=True
-            )
-
-            # إشعار تلقائي للمدير إذا كان هناك مدير معرف في قاعدة البيانات
-            self.db.execute_query(
-                "SELECT telegram_user_id FROM employees WHERE job_grade = 'مدير' LIMIT 1"
-            )
-            manager_row = self.db.cursor.fetchone()
-            if manager_row and manager_row[0]:
-                manager_chat_id = manager_row[0]
-                msg = (
-                    f"طلب إجازة جديد بانتظار موافقتك من {emp_name}:\n"
-                    f"• النوع: {vac_type}\n"
-                    f"• من: {start_date} إلى {end_date}\n"
-                    f"• المدة: {duration} يوم\n"
-                    f"يرجى مراجعة الطلب والموافقة أو الرفض من خلال الواجهة الإدارية."
-                )
-                await context.bot.send_message(chat_id=int(manager_chat_id), text=msg)
-
-            await update.message.reply_text("تم إرسال الطلب للمدير بانتظار الموافقة النهائية.")
-
+            success, message = self.approval_flow.approve_by_head(vacation_id, telegram_id)
         elif action == "رفض":
-            if current_status.startswith("مرفوض"):
-                await update.message.reply_text("تم رفض الطلب مسبقًا.")
-                return
-
-            self.db.execute_query(
-                "UPDATE vacations SET status='مرفوض من رئيس القسم' WHERE id=?",
-                (vac_id,),
-                commit=True
-            )
-            if emp_telegram:
-                msg = (
-                    f"❌ تم رفض طلب الإجازة ({vac_type}) من رئيس القسم.\n"
-                    f"من {start_date} إلى {end_date}\n"
-                    f"المدة: {duration} يوم"
-                )
-                await context.bot.send_message(chat_id=int(emp_telegram), text=msg)
-
-            await update.message.reply_text(f"تم رفض طلب الإجازة وسيتم إخطار الموظف.")
-
+            success, message = self.approval_flow.reject_by_head(vacation_id, telegram_id, reason)
         else:
-            await update.message.reply_text("يرجى اختيار 'موافق' أو 'رفض' فقط.")
+            success, message = False, "إجراء غير صالح."
 
-        # مسح الطلب الجاري لهذا الرئيس
-        context.application.bot_data.pop(f"head_pending_{telegram_id}", None)
+        await update.message.reply_text(message)
+        return ConversationHandler.END
+
+
+
+    async def notify_manager(self, vacation_id):
+        try:
+            self.db.execute_query(
+                "SELECT e.name, v.type, v.start_date, v.end_date FROM vacations v JOIN employees e ON v.employee_id = e.id WHERE v.id = ?",
+                (vacation_id,)
+            )
+            vacation = self.db.cursor.fetchone()
+            if not vacation:
+                raise Exception("تعذر العثور على تفاصيل الإجازة.")
+
+            name, vac_type, start_date, end_date = vacation
+            message = (
+                f"طلب إجازة جديد بانتظار موافقتك:\n"
+                f"الموظف: {name}\n"
+                f"النوع: {vac_type}\n"
+                f"الفترة: {start_date} إلى {end_date}\n"
+            )
+
+            # افترض أن لديك ID المدير
+            manager_telegram_id = self.get_manager_telegram_id()
+            if manager_telegram_id:
+                await self.bot.send_message(chat_id=manager_telegram_id, text=message)
+        except Exception as e:
+            print(f"خطأ في إرسال إشعار للمدير: {e}")
+
+
 
     async def send_vacation_request_to_head(self, context, employee, vacation, vacation_id):
         try:
@@ -634,7 +601,7 @@ class EmployeeQueryBot:
             )
             vacation_id = self.db.cursor.lastrowid
 
-            # إرسال الإشعار لرئيس القسم بعد الحفظ
+            # إرسال الإشعار لرئيس القسم بعد الحفظ (اختياري)
             emp = context.user_data['employee']
             success, notify_message = await self.send_vacation_request_to_head(context, emp, vacation, vacation_id)
             await update.message.reply_text(notify_message)
@@ -651,6 +618,7 @@ class EmployeeQueryBot:
                 f"حدث خطأ أثناء تقديم الطلب: {str(e)}\nالرجاء المحاولة مرة أخرى أو التواصل مع الدعم."
             )
             return MAIN_MENU
+
 
     async def show_vacation_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message.text == "↩️ رجوع" or update.message.text == "إلغاء":
@@ -764,13 +732,14 @@ class EmployeeQueryBot:
             """, (context.user_data['employee']['id'],))
             balance = self.db.cursor.fetchone()[0]
             await update.message.reply_text(
-                f"✈️ رصيد الإجازات: {balance} يوم",
+                f"✈️ رصيد الإجازات: {balance} يوم حتى تاريخ 31/12/2024",
                 reply_markup=ReplyKeyboardMarkup([["↩️ رجوع", "إلغاء"]], resize_keyboard=True)
             )
             return MAIN_MENU
         except Exception as e:
             await update.message.reply_text(f"حدث خطأ: {str(e)}")
             return MAIN_MENU
+
 
     async def show_basic_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message.text == "↩️ رجوع" or update.message.text == "إلغاء":

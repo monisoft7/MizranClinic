@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QTabWidget, QStatusBar, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QMainWindow, QTabWidget, QStatusBar, QLabel, QVBoxLayout, QWidget, QMessageBox
 from PyQt6.QtCore import Qt
 from tabs.employee_view import EmployeeViewTab
 from tabs.employee_management import EmployeeManagementTab
@@ -19,37 +19,32 @@ class MainWindow(QMainWindow):
         """تهيئة الواجهة الرئيسية"""
         self.setWindowTitle("نظام إدارة الموظفين - المجمع الصحي ميزران")
         self.setGeometry(100, 100, 1200, 800)
-        
+
         # إنشاء التبويبات الرئيسية
         self.tabs = QTabWidget()
         self.create_tabs()
-        
+
         # إنشاء شريط الحالة
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        
+
         # تعيين التبويبات كعنصر مركزي
         self.setCentralWidget(self.tabs)
 
     def create_tabs(self):
         """إنشاء وتكوين التبويبات"""
-        # تبويب عرض الموظفين
         self.employee_view_tab = EmployeeViewTab(self.db)
         self.tabs.addTab(self.employee_view_tab, "عرض الموظفين")
-        
-        # تبويب إدارة الموظفين
+
         self.employee_management_tab = EmployeeManagementTab(self.db, self)
         self.tabs.addTab(self.employee_management_tab, "إدارة الموظفين")
-        
-        # تبويب الإجازات
+
         self.vacations_tab = VacationsTab(self.db)
         self.tabs.addTab(self.vacations_tab, "إدارة الإجازات")
-        
-        # تبويب الغياب
+
         self.absences_tab = AbsencesTab(self.db)
         self.tabs.addTab(self.absences_tab, "تسجيل الغياب")
-        
-        # تبويب الاستيراد/التصدير
+
         self.import_export_tab = ImportExportTab(self.db)
         self.tabs.addTab(self.import_export_tab, "استيراد/تصدير")
 
@@ -64,15 +59,15 @@ class MainWindow(QMainWindow):
             border-bottom: 2px solid #C0C0C0;
         """)
         self.notification_bar.hide()
-    
+
         # تحديث الإشعارات عند تغيير التبويب
         self.tabs.currentChanged.connect(self.update_notifications)
-    
+
         # إضافة شريط الإشعارات إلى التخطيط
         layout = QVBoxLayout()
         layout.addWidget(self.notification_bar)
         layout.addWidget(self.tabs)
-    
+
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
@@ -81,10 +76,10 @@ class MainWindow(QMainWindow):
         """تحديث الإشعارات"""
         try:
             self.db.execute_query("""
-                SELECT COUNT(*) FROM vacations WHERE status='pending'
+                SELECT COUNT(*) FROM vacations WHERE status='بانتظار موافقة رئيس القسم' OR status='بانتظار موافقة المدير'
             """, commit=False)
             count = self.db.cursor.fetchone()[0]
-        
+
             if count > 0:
                 self.notification_bar.setText(f"لديك {count} طلبات إجازة بانتظار الموافقة")
                 self.notification_bar.show()
@@ -92,7 +87,6 @@ class MainWindow(QMainWindow):
                 self.notification_bar.hide()
         except Exception as e:
             print(f"Error updating notifications: {e}")
-
 
     def setup_connections(self):
         """ربط الإشارات والأحداث"""
@@ -117,7 +111,7 @@ class MainWindow(QMainWindow):
         """التحقق من طلبات الإجازة المعلقة"""
         try:
             self.db.execute_query(
-                "SELECT COUNT(*) FROM vacations WHERE status='pending'",
+                "SELECT COUNT(*) FROM vacations WHERE status='بانتظار موافقة رئيس القسم' OR status='بانتظار موافقة المدير'",
                 commit=False
             )
             count = self.db.cursor.fetchone()[0]
