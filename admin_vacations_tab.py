@@ -1,3 +1,4 @@
+from approval_flow import ApprovalFlow
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
     QPushButton, QMessageBox, QHeaderView
@@ -8,6 +9,7 @@ class AdminVacationsTab(QWidget):
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
+        self.approval_flow = ApprovalFlow(db_manager)
 
         self.table = QTableWidget()
         self.refresh_btn = QPushButton("تحديث")
@@ -20,7 +22,7 @@ class AdminVacationsTab(QWidget):
         # Timer for checking new approved vacations
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check_new_approved_vacations)
-        self.timer.start(10000)  # every 10 seconds
+        self.timer.start(10000)  # كل 10 ثواني
 
     def setup_ui(self):
         layout = QVBoxLayout()
@@ -47,7 +49,6 @@ class AdminVacationsTab(QWidget):
         self.reject_btn.clicked.connect(self.reject_vacation)
 
     def load_vacations(self):
-        """تحميل الإجازات بانتظار موافقة المدير"""
         self.db.execute_query("""
             SELECT v.id, e.name, e.department, v.type, v.start_date, v.end_date, v.duration, v.status
             FROM vacations v
@@ -56,16 +57,17 @@ class AdminVacationsTab(QWidget):
             ORDER BY v.created_at DESC
         """)
         vacations = self.db.cursor.fetchall()
-        self.table.setRowCount(len(vacations))
+        self.vacations_table.setRowCount(len(vacations))
         for row_idx, row in enumerate(vacations):
             for col_idx, value in enumerate(row):
-                self.table.setItem(row_idx, col_idx, QTableWidgetItem(str(value)))
+                self.vacations_table.setItem(row_idx, col_idx, QTableWidgetItem(str(value)))
 
     def get_selected_vacation_id(self):
         row = self.table.currentRow()
         if row < 0:
             return None
         return int(self.table.item(row, 0).text())
+
 
     def approve_vacation(self):
         vac_id = self.get_selected_vacation_id()
@@ -96,13 +98,15 @@ class AdminVacationsTab(QWidget):
             )
 
         self.db.execute_query(
-            "UPDATE vacations SET status='موافق', seen_by_admin=0 WHERE id=?",
+            "UPDATE vacations SET status='موافق' WHERE id=?",
             (vac_id,)
         )
 
+        # إشعار الموظف بالموافقة
         self.notify_employee_status(emp_id, vac_id, approved=True)
         QMessageBox.information(self, "تمت الموافقة", "تمت الموافقة على الإجازة بنجاح.")
         self.load_vacations()
+
 
     def reject_vacation(self):
         vac_id = self.get_selected_vacation_id()
@@ -130,6 +134,7 @@ class AdminVacationsTab(QWidget):
         QMessageBox.information(self, "تم الرفض", "تم رفض الإجازة بنجاح.")
         self.load_vacations()
 
+
     def notify_employee_status(self, emp_id, vac_id, approved=True):
         """إشعار الموظف عبر التليجرام"""
         self.db.execute_query("SELECT telegram_user_id FROM employees WHERE id=?", (emp_id,))
@@ -138,7 +143,7 @@ class AdminVacationsTab(QWidget):
             telegram_id = tg_row[0]
             try:
                 from telegram import Bot
-                bot = Bot("7798615366:AAGhr928M-PZ19usrx6yr2nG0mLBXvP3r0E")  # ضع توكن البوت الخاص بك هنا
+                bot = Bot("YOUR_BOT_TOKEN")  # استبدل بـ Token الخاص بك
                 self.db.execute_query("SELECT type, start_date, end_date, duration FROM vacations WHERE id=?", (vac_id,))
                 vac_row = self.db.cursor.fetchone()
                 if approved:
@@ -147,10 +152,6 @@ class AdminVacationsTab(QWidget):
                         f"من {vac_row[1]} إلى {vac_row[2]}\n"
                         f"المدة: {vac_row[3]} يوم\n"
                     )
-                    if vac_row[0] == "سنوية":
-                        self.db.execute_query("SELECT vacation_balance FROM employees WHERE id=?", (emp_id,))
-                        new_balance = self.db.cursor.fetchone()[0]
-                        msg += f"رصيدك الحالي: {new_balance} يوم"
                 else:
                     msg = (
                         f"❌ تم رفض طلب الإجازة ({vac_row[0]}) من المدير.\n"
@@ -160,6 +161,7 @@ class AdminVacationsTab(QWidget):
                 bot.send_message(chat_id=int(telegram_id), text=msg)
             except Exception as e:
                 print(f"تعذر إرسال إشعار التليجرام: {e}")
+
 
     def check_new_approved_vacations(self):
         """إشعار المدير بالإجازات الجديدة الموافَق عليها ولم يُطّلع عليها بعد"""
