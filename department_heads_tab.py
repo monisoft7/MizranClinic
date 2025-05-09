@@ -1,3 +1,4 @@
+from approval_flow import ApprovalFlow
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
     QPushButton, QComboBox, QLineEdit, QMessageBox, QHeaderView, QInputDialog
@@ -7,6 +8,7 @@ class DepartmentHeadsTab(QWidget):
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
+        self.approval_flow = ApprovalFlow(db_manager)
 
         self.heads_table = QTableWidget()
         self.employee_combo = QComboBox()
@@ -46,7 +48,6 @@ class DepartmentHeadsTab(QWidget):
         layout.addWidget(self.heads_table)
         layout.addWidget(self.delete_head_btn)
 
-        # أزرار الإجازات (موافقة ورفض)
         actions_layout = QHBoxLayout()
         actions_layout.addWidget(self.approve_vacation_btn)
         actions_layout.addWidget(self.reject_vacation_btn)
@@ -125,43 +126,35 @@ class DepartmentHeadsTab(QWidget):
             QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء الحذف:\n{str(e)}")
 
     def approve_vacation(self):
-        """موافقة على الإجازة من رئيس القسم (تتحول للمدير)"""
         vacation_id, approved_by = self.select_pending_vacation()
         if vacation_id is None:
             return
-
         try:
-            self.db.approve_vacation_by_head(vacation_id, approved=True, approved_by=approved_by)
+            # تحديث الحالة فقط
+            self.db.execute_query(
+                "UPDATE vacations SET status='بانتظار موافقة المدير', approved_by=? WHERE id=?",
+                (approved_by, vacation_id)
+            )
             QMessageBox.information(self, "نجاح", "تم إرسال الطلب للمدير بانتظار الموافقة النهائية.")
-            # هنا يمكنك استدعاء send_to_manager لإشعار المدير إذا كان لديك دالة لذلك
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء الموافقة:\n{str(e)}")
 
+
     def reject_vacation(self):
-        """رفض الإجازة من رئيس القسم"""
         vacation_id, approved_by = self.select_pending_vacation()
         if vacation_id is None:
             return
-
-        # الحصول على سبب الرفض
         reason, ok = QInputDialog.getText(self, "سبب الرفض", "يرجى كتابة سبب الرفض:")
         if not ok:
             return
-
         try:
             self.db.approve_vacation_by_head(vacation_id, approved=False, notes=reason, approved_by=approved_by)
             QMessageBox.information(self, "تم الرفض", "تم رفض الإجازة وسيتم إشعار الموظف.")
-            # هنا يمكنك استدعاء notify_employee_reject لإشعار الموظف إذا كان لديك دالة لذلك
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء الرفض:\n{str(e)}")
 
     def select_pending_vacation(self):
-        """
-        نافذة اختيار الإجازة المعلقة لهذا القسم فقط
-        تعيد (vacation_id, approved_by)
-        """
         try:
-            # استعلام لجلب الإجازات المعلقة لرئيس القسم حسب قسمه
             department = self.department_combo.currentText()
             self.db.execute_query("""
                 SELECT v.id, e.name
@@ -176,7 +169,6 @@ class DepartmentHeadsTab(QWidget):
                 QMessageBox.information(self, "لا يوجد طلبات", "لا توجد إجازات بانتظار موافقتك لهذا القسم حالياً.")
                 return None, None
 
-            # اختيار إجازة من القائمة
             items = [f"{row[1]} (ID: {row[0]})" for row in vacations]
             idx, ok = QInputDialog.getItem(self, "طلبات الإجازة", "اختر طلب الإجازة:", items, 0, False)
             if not ok:
